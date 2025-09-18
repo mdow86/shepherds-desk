@@ -1,24 +1,18 @@
+# video_compose.py
 """
-Stitches plan.json + generated images + wavs into a single MP4.
+Stitches plan.json + generated images + audio into a single MP4.
 
-- Supports Plan v1 (fixed 10s clips, key 'dialogue') and Plan v2 (variable durations with
-  'dialogue_text' and optional 'verse{ref,text}', 'mode').
-- For each clip, the target slot is (end_sec - start_sec). If the audio is longer than the slot,
-  we extend the image duration to match audio.
-- Writes subtitles.srt from subtitle (if provided) else from spoken text.
-- Outputs to outputs/video/final.mp4
+- Accepts .mp3, .wav, .opus, .ulaw, .alaw per clip.
+- If audio is longer than the slot, extend image duration to match.
+- Writes subtitles.srt.
 
 Run:
   python video_compose.py
-Optional:
   python video_compose.py --plan outputs/plan.json --imgdir outputs/images --audiodir outputs/audio --out outputs/video/final.mp4
 """
-
 from __future__ import annotations
-import argparse
-import json
+import argparse, json, sys
 from pathlib import Path
-import sys
 import numpy as np
 
 from moviepy.editor import (
@@ -32,9 +26,10 @@ DEFAULT_IMGDIR = Path("outputs/images")
 DEFAULT_AUDIODIR = Path("outputs/audio")
 DEFAULT_OUT = Path("outputs/video/final.mp4")
 
-DEFAULT_SR = 24000  # Piper default sample rate
+DEFAULT_SR = 24000  # used for synthetic silence
 FPS = 30
 
+AUDIO_EXTS = (".mp3", ".wav", ".opus", ".ulaw", ".alaw")
 
 # ---------- Plan helpers ----------
 def load_plan(p: Path) -> dict:
@@ -44,49 +39,31 @@ def load_plan(p: Path) -> dict:
         print(f"Cannot read plan: {e}", file=sys.stderr)
         sys.exit(1)
 
-
 def get_clip_times(clip: dict, default_index: int) -> tuple[float, float]:
-    """
-    v2: use start_sec/end_sec.
-    v1 fallback: derive 10s slots based on index (1→[0,10), 2→[10,20), ...).
-    """
     if "start_sec" in clip and "end_sec" in clip:
         return float(clip["start_sec"]), float(clip["end_sec"])
     start = (default_index - 1) * 10.0
-    end = default_index * 10.0
-    return start, end
-
+    return start, start + 10.0
 
 def clip_spoken_text(clip: dict) -> str:
-    """
-    v2: combine verse.text (+ref) + dialogue_text for captions if no 'subtitle'.
-    v1: use 'dialogue'.
-    """
     if "dialogue_text" in clip or "verse" in clip:
         parts = []
-        verse = clip.get("verse") or None
-        if verse and verse.get("text"):
-            ref = verse.get("ref", "").strip()
-            parts.append(f"{verse['text']} ({ref})." if ref else verse["text"])
+        v = clip.get("verse") or None
+        if v and v.get("text"):
+            ref = v.get("ref", "").strip()
+            parts.append(f"{v['text']} ({ref})." if ref else v["text"])
         if clip.get("dialogue_text"):
             parts.append(clip["dialogue_text"])
         return " ".join(" ".join(parts).split())
-    # v1
     return " ".join((clip.get("dialogue", "") or "").split())
 
-
 def clip_subtitle(clip: dict) -> str:
-    """Prefer explicit subtitle if present, else spoken text."""
-    sub = clip.get("subtitle")
-    if isinstance(sub, str) and sub.strip():
-        return " ".join(sub.strip().split())
-    return clip_spoken_text(clip)
-
+    s = clip.get("subtitle")
+    return " ".join(s.strip().split()) if isinstance(s, str) and s.strip() else clip_spoken_text(clip)
 
 # ---------- SRT helpers ----------
 def srt_escape(text: str) -> str:
     return (text or "").replace("\n", " ").strip()
-
 
 def to_srt_timestamp(seconds: float) -> str:
     ms = int(round(seconds * 1000))
@@ -95,37 +72,39 @@ def to_srt_timestamp(seconds: float) -> str:
     ss = ms // 1000;          ms %= 1000
     return f"{hh:02d}:{mm:02d}:{ss:02d},{ms:03d}"
 
-
 def write_srt(plan: dict, srt_path: Path) -> None:
     lines = []
-    clips = plan.get("clips", [])
-    for clip in clips:
+    for clip in plan.get("clips", []):
         idx = int(clip["index"])
         start, end = get_clip_times(clip, idx)
-        text = srt_escape(clip_subtitle(clip))
         lines.append(f"{idx}")
         lines.append(f"{to_srt_timestamp(start)} --> {to_srt_timestamp(end)}")
-        lines.append(text)
-        lines.append("")  # blank line
+        lines.append(srt_escape(clip_subtitle(clip)))
+        lines.append("")
     srt_path.parent.mkdir(parents=True, exist_ok=True)
     srt_path.write_text("\n".join(lines), encoding="utf-8")
 
-
 # ---------- Audio helpers ----------
 def make_silence_array(duration: float, fps: int, nchannels: int) -> AudioArrayClip:
-    """Return digital silence with shape (n_samples, nchannels)."""
     n = max(1, int(round(duration * fps)))
     arr = np.zeros((n, nchannels), dtype=np.float32)
     return AudioArrayClip(arr, fps=fps)
 
+def find_audio_for_clip(aud_dir: Path, idx: int) -> Path | None:
+    for ext in AUDIO_EXTS:
+        p = aud_dir / f"clip{idx}{ext}"
+        if p.exists():
+            return p
+    return None
 
-def fit_audio_to_slot(wav_path: Path, slot_dur: float) -> AudioClip:
-    """
-    If audio exists: trim or right-pad with silence to slot_dur.
-    If missing: pure silence with DEFAULT_SR mono.
-    """
-    if wav_path.exists():
-        a = AudioFileClip(str(wav_path))
+def fit_audio_to_slot(aud_path: Path | None, slot_dur: float) -> AudioClip:
+    if aud_path and aud_path.exists():
+        try:
+            a = AudioFileClip(str(aud_path))
+        except Exception as e:
+            print(f"Warning: failed reading audio {aud_path}: {e}. Using silence.", file=sys.stderr)
+            return make_silence_array(slot_dur, fps=DEFAULT_SR, nchannels=1)
+
         fps = int(a.fps)
         nch = int(getattr(a, "nchannels", 1))
         if a.duration > slot_dur:
@@ -134,9 +113,7 @@ def fit_audio_to_slot(wav_path: Path, slot_dur: float) -> AudioClip:
             pad = make_silence_array(slot_dur - a.duration, fps=fps, nchannels=nch)
             return concatenate_audioclips([a, pad])
         return a
-    else:
-        return make_silence_array(slot_dur, fps=DEFAULT_SR, nchannels=1)
-
+    return make_silence_array(slot_dur, fps=DEFAULT_SR, nchannels=1)
 
 # ---------- Build video ----------
 def build_video(plan_path: Path, img_dir: Path, aud_dir: Path, out_path: Path) -> None:
@@ -150,27 +127,21 @@ def build_video(plan_path: Path, img_dir: Path, aud_dir: Path, out_path: Path) -
     for c in clips:
         idx = int(c["index"])
         img_path = img_dir / f"clip{idx}.png"
-        wav_path = aud_dir / f"clip{idx}.wav"
-
         if not img_path.exists():
             print(f"Missing image: {img_path}", file=sys.stderr)
             sys.exit(1)
 
-        # Planned slot duration
         start, end = get_clip_times(c, idx)
         slot_dur = max(0.01, float(end - start))
 
-        # Load/fit audio to slot
-        a = fit_audio_to_slot(wav_path, slot_dur)
-
-        # Image duration extends to audio if audio is longer than slot
+        aud_path = find_audio_for_clip(aud_dir, idx)
+        a = fit_audio_to_slot(aud_path, slot_dur)
         dur = max(slot_dur, getattr(a, "duration", slot_dur))
 
         v = ImageClip(str(img_path), duration=dur).set_fps(FPS).set_audio(a)
         segs.append(v)
 
     final = concatenate_videoclips(segs, method="compose")
-
     out_path.parent.mkdir(parents=True, exist_ok=True)
     final.write_videofile(
         str(out_path),
@@ -179,14 +150,13 @@ def build_video(plan_path: Path, img_dir: Path, aud_dir: Path, out_path: Path) -
         audio_codec="aac",
         threads=0,
         preset="medium",
-        bitrate="4000k"
+        bitrate="4000k",
     )
 
     srt_path = out_path.with_suffix(".srt")
     write_srt(plan, srt_path)
     print(f"Wrote: {out_path}")
     print(f"Wrote: {srt_path}")
-
 
 def main():
     ap = argparse.ArgumentParser(description="Compose images+audio into a single MP4 from plan.json")
@@ -195,9 +165,7 @@ def main():
     ap.add_argument("--audiodir", type=Path, default=DEFAULT_AUDIODIR)
     ap.add_argument("--out", type=Path, default=DEFAULT_OUT)
     args = ap.parse_args()
-
     build_video(args.plan, args.imgdir, args.audiodir, args.out)
-
 
 if __name__ == "__main__":
     main()
