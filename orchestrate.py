@@ -1,131 +1,156 @@
-# orchestrate.py
+# orchestrate.py — minimal, with auto-named video outputs
 """
-End-to-end runner:
-1) Call Gloo to produce outputs/plan.json
-2) Generate audio via Piper or ElevenLabs from plan.json
-3) Generate PNGs with SD WebUI API from plan.json
-4) Compose final MP4 (+ SRT)
+Stages:
+- GLOO → writes plan.json
+- TTS  → Piper or ElevenLabs
+- IMG  → SD WebUI or Gemini
+- VIDEO → composes MP4, auto-names from plan title
 
-Usage examples:
-  python orchestrate.py --tts piper --piper "D:\\tools\\piper\\piper.exe" --model "D:\\tools\\piper\\models\\en_GB-alan-low.onnx"
-  python orchestrate.py --tts elevenlabs
-  python orchestrate.py --use-elevenlabs
-Options:
+Flags:
+  --only {gloo,tts,img,video}
   --skip-gloo --skip-tts --skip-img --skip-video
-Exit codes: 0 success, nonzero on first failed stage.
+  --tts {piper,elevenlabs}   (default piper)
+  --img {sd,gemini}          (default sd)
 """
+
 from __future__ import annotations
-import argparse, subprocess, sys, time, json
+import argparse
+import json
+import logging
+import subprocess
+import sys
+import time
 from pathlib import Path
 
-ROOT = Path(__file__).parent
-PLAN = ROOT / "outputs" / "plan.json"
+import paths  # shared paths.py
 
-DEFAULT_PIPER_EXE = r"D:\dev\windows\gloo\packages\generator\generator\tools\piper\piper.exe"
-DEFAULT_PIPER_MODEL = r"D:\dev\windows\gloo\packages\generator\generator\tools\piper\models\en_GB-alan-low.onnx"
-DEFAULT_SD_API = "http://127.0.0.1:7861"
+ROOT = Path(__file__).resolve().parent
+PLAN = paths.OUTPUTS / "plan.json"
+CODE = Path(getattr(paths, "CODE_ROOT", ROOT))
 
 def exists_plan() -> bool:
-    return PLAN.exists() and PLAN.stat().st_size > 2
+    if not PLAN.exists():
+        return False
+    try:
+        data = json.loads(PLAN.read_text(encoding="utf-8"))
+    except Exception:
+        return False
+    return bool(data.get("title") or any(isinstance(v, list) and v for v in data.values()))
 
 def load_title() -> str:
     try:
-        data = json.loads(PLAN.read_text(encoding="utf-8"))
-        return data.get("title", "")
+        return json.loads(PLAN.read_text(encoding="utf-8")).get("title", "")
     except Exception:
         return ""
 
 def run_step(name: str, cmd: list[str]) -> None:
-    t0 = time.time()
-    print(f"[{name}] → {' '.join(cmd)}")
+    t0 = time.perf_counter()
+    logging.info("[%s] → %s", name, " ".join(cmd))
     try:
         subprocess.run(cmd, check=True)
     except subprocess.CalledProcessError as e:
-        dt = time.time() - t0
-        print(f"[{name}] FAILED in {dt:.1f}s (exit {e.returncode})")
+        dt = time.perf_counter() - t0
+        logging.error("[%s] FAILED in %.1fs (exit %s)", name, dt, e.returncode)
         sys.exit(e.returncode)
-    dt = time.time() - t0
-    print(f"[{name}] OK in {dt:.1f}s")
+    dt = time.perf_counter() - t0
+    logging.info("[%s] OK in %.1fs", name, dt)
 
-def main():
-    ap = argparse.ArgumentParser(description="Pipeline orchestrator")
-    ap.add_argument("--skip-gloo", action="store_true")
-    ap.add_argument("--skip-tts", action="store_true")
-    ap.add_argument("--skip-img", action="store_true")
-    ap.add_argument("--skip-video", action="store_true")
+# ---------- command builders ----------
+def tts_cmd_piper(a: argparse.Namespace) -> list[str]:
+    return [
+        sys.executable, str(CODE / "gen_tts_piper.py"),
+        "--plan", str(PLAN),
+        "--outdir", str(paths.OUTPUTS / "audio"),
+    ]
 
-    ap.add_argument("--tts", choices=["piper", "elevenlabs"], default="piper")
-    ap.add_argument("--use-piper", dest="use_piper", action="store_true")
-    ap.add_argument("--use-elevenlabs", dest="use_eleven", action="store_true")
+def tts_cmd_eleven(a: argparse.Namespace) -> list[str]:
+    return [
+        sys.executable, str(CODE / "gen_tts_11labs.py"),
+        "--plan", str(PLAN),
+        "--outdir", str(paths.OUTPUTS / "audio"),
+    ]
 
-    ap.add_argument("--piper", default=DEFAULT_PIPER_EXE, help="Path to piper.exe")
-    ap.add_argument("--model", default=DEFAULT_PIPER_MODEL, help="Path to Piper .onnx")
+def img_cmd_sd(a: argparse.Namespace) -> list[str]:
+    return [
+        sys.executable, str(CODE / "gen_img_sd.py"),
+        "--plan", str(PLAN),
+        "--outdir", str(paths.OUTPUTS / "images"),
+    ]
 
-    ap.add_argument("--api", default=DEFAULT_SD_API)
-    ap.add_argument("--w", type=int, default=1024)
-    ap.add_argument("--h", type=int, default=576)
-    ap.add_argument("--steps", type=int, default=28)
-    ap.add_argument("--cfg", type=float, default=6.5)
-    ap.add_argument("--sampler", default="DPM++ 2M Karras")
-    args = ap.parse_args()
+def img_cmd_gemini(a: argparse.Namespace) -> list[str]:
+    return [
+        sys.executable, str(CODE / "gen_img_gemini.py"),
+        "--plan", str(PLAN),
+        "--outdir", str(paths.OUTPUTS / "images"),
+    ]
 
-    if args.use_piper: args.tts = "piper"
-    if args.use_eleven: args.tts = "elevenlabs"
+def video_cmd(a: argparse.Namespace) -> list[str]:
+    # Do NOT pass --out; let video_compose auto-name from title
+    return [
+        sys.executable, str(CODE / "video_compose.py"),
+        "--plan", str(PLAN),
+        "--imgdir", str(paths.OUTPUTS / "images"),
+        "--audiodir", str(paths.OUTPUTS / "audio"),
+        "--outdir", str(paths.OUTPUTS / "video"),
+    ]
 
-    if not args.skip_gloo:
-        run_step("GLOO", [sys.executable, str(ROOT / "api_call.py")])
+def build_parser() -> argparse.ArgumentParser:
+    p = argparse.ArgumentParser(description="Simple orchestrator")
+    p.add_argument("--only", choices=["gloo", "tts", "img", "video"])
+    p.add_argument("--skip-gloo", action="store_true")
+    p.add_argument("--skip-tts", action="store_true")
+    p.add_argument("--skip-img", action="store_true")
+    p.add_argument("--skip-video", action="store_true")
+    p.add_argument("--tts", choices=["piper", "elevenlabs"], default="piper")
+    p.add_argument("--img", choices=["sd", "gemini"], default="sd")
+    p.add_argument("--log", default="INFO", choices=["DEBUG", "INFO", "WARNING", "ERROR"])
+    return p
+
+def main() -> None:
+    a = build_parser().parse_args()
+    logging.basicConfig(level=getattr(logging, a.log), format="%(message)s")
+
+    def enabled(stage: str) -> bool:
+        if a.only and stage != a.only:
+            return False
+        if stage == "gloo" and a.skip_gloo:   return False
+        if stage == "tts"  and a.skip_tts:    return False
+        if stage == "img"  and a.skip_img:    return False
+        if stage == "video"and a.skip_video:  return False
+        return True
+
+    logging.info("CODE=%s", paths.CODE_ROOT)
+
+    # 1) GLOO
+    if enabled("gloo"):
+        run_step("GLOO", [sys.executable, str(CODE / "api_call.py")])
     else:
-        print("[GLOO] skipped")
+        logging.info("[GLOO] skipped")
+
     if not exists_plan():
-        print("Missing outputs/plan.json; cannot continue.")
+        logging.error("plan.json missing or empty")
         sys.exit(2)
-    print(f"[PLAN] {PLAN} — Title: {load_title()}")
+    logging.info("[PLAN] %s — Title: %s", PLAN, load_title())
 
-    if not args.skip_tts:
-        if args.tts == "piper":
-            run_step("TTS", [
-                sys.executable, str(ROOT / "tts_piper_batch.py"),
-                "--exe", args.piper,
-                "--model", args.model,
-                "--outdir", str(ROOT / "outputs" / "audio"),
-                "--plan", str(PLAN),
-            ])
-        else:
-            run_step("TTS", [
-                sys.executable, str(ROOT / "tts_eleven_labs_batch.py"),
-                "--plan", str(PLAN),
-                "--outdir", str(ROOT / "outputs" / "audio"),
-            ])
+    # 2) TTS
+    if enabled("tts"):
+        run_step("TTS", tts_cmd_piper(a) if a.tts == "piper" else tts_cmd_eleven(a))
     else:
-        print("[TTS] skipped")
+        logging.info("[TTS] skipped")
 
-    if not args.skip_img:
-        run_step("IMG", [
-            sys.executable, str(ROOT / "image_gen_batch.py"),
-            "--api", args.api,
-            "--w", str(args.w),
-            "--h", str(args.h),
-            "--steps", str(args.steps),
-            "--cfg", str(args.cfg),
-            "--sampler", args.sampler,
-            "--plan", str(PLAN),
-            "--outdir", str(ROOT / "outputs" / "images"),
-        ])
+    # 3) IMG
+    if enabled("img"):
+        run_step("IMG", img_cmd_sd(a) if a.img == "sd" else img_cmd_gemini(a))
     else:
-        print("[IMG] skipped")
+        logging.info("[IMG] skipped")
 
-    if not args.skip_video:
-        run_step("VIDEO", [
-            sys.executable, str(ROOT / "video_compose.py"),
-            "--plan", str(PLAN),
-            "--imgdir", str(ROOT / "outputs" / "images"),
-            "--audiodir", str(ROOT / "outputs" / "audio"),
-            "--out", str(ROOT / "outputs" / "video" / "final.mp4"),
-        ])
+    # 4) VIDEO
+    if enabled("video"):
+        run_step("VIDEO", video_cmd(a))
     else:
-        print("[VIDEO] skipped")
+        logging.info("[VIDEO] skipped")
 
-    print("DONE")
+    logging.info("DONE")
 
 if __name__ == "__main__":
     main()
