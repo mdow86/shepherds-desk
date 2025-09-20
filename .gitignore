@@ -1,25 +1,29 @@
-# venvs and caches
+# Virtual environments
 .venv/
 venv/
+
+# Python cache and artifacts
 __pycache__/
 *.pyc
+*.pyo
+*.pyd
 
-# secrets
+# Environment & secrets
 .env
 
-# generated artifacts
-outputs/
-outputs/*
+# Generated outputs
+src/media_generator/outputs/
+src/media_generator/outputs/*
 plan*.md
 
-# local tools and large binaries
-tools/
+# Local tools and binaries
+tools-local/
+tools-local/*
 
-# ad-hoc files
-api_call-backup.py
-test/
-test.png
+# Ad-hoc files
 
-# OS cruft
+# OS / Editor cruft
 .DS_Store
 Thumbs.db
+*.swp
+*.swo

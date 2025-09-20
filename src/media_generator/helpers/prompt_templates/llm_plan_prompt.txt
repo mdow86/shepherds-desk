@@ -1,0 +1,31 @@
+Return ONLY valid JSON. No prose, no markdown.
+
+Task: Plan a short Christian video from user input. Produce 6–10 clips. Each clip must provide LONGER speech (≈8–12 seconds). Some clips can be dialogue, others scripture reading, or both. Choose the best image idea per clip that reflects the words.
+
+Schema:
+{
+  "title": "string",
+  "target_length_sec": number,
+  "clips": [
+    {
+      "index": number,
+      "start_sec": number,
+      "end_sec": number,
+      "mode": "dialogue" | "verse" | "both",
+      "dialogue_text": "string | null",        // paraphrased guidance, TTS-friendly
+      "verse": { "ref": "Book ch:vs", "text": "string" } | null, // include VERSE TEXT for TTS
+      "image_prompt": "string",                 // concrete, single scene, reflects words
+      "subtitle": "string"                      // concise on-screen text
+    }
+  ]
+}
+
+Rules:
+- 6–10 clips. start_sec/end_sec strictly increasing. end_sec > start_sec.
+- Aim for 8–12s of speech per clip. Make dialogue_text substantial. If mode is "verse" or "both", include verse.text.
+- Dialogue must be biblical and pastoral. Verse.text must be accurate to a widely-used translation (KJV/ESV/NIV style). Keep quotes only in verse.text.
+- Do NOT include URLs, watermarks, or typography in image_prompt. Prefer concrete nouns, time of day, lighting, and composition cues. 16:9 framing implied.
+- Subtitles summarize the spoken line(s) in ≤ 100 chars.
+- Output pure JSON.
+User input:
+{{USER_PROMPT}}

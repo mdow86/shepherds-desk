@@ -1,8 +1,14 @@
-
-requests
 python-dotenv
+requests
 PyJWT
 jsonschema
 pytest
 moviepy==1.0.3
 imageio-ffmpeg
+
+# AI / API clients
+google-genai>=0.1.0
+elevenlabs>=1.0.0
+
+# Optional: if you use dotenv CLI
+python-dotenv[cli]
