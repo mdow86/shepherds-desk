@@ -1,41 +1,18 @@
 # src/media_generator/orchestrate.py
-# orchestrate.py — minimal, with auto-named video outputs
-"""
-Stages:
-- GLOO  → writes plan.json
-- TTS   → Piper or ElevenLabs
-- IMG   → SD WebUI or Gemini
-- VIDEO → composes MP4, auto-names from plan title
-
-Flags:
-  --only {gloo,tts,img,video}
-  --skip-gloo --skip-tts --skip-img --skip-video
-  --tts {piper,elevenlabs}   (default piper)
-  --img {sd,gemini}          (default sd)
-"""
 from __future__ import annotations
-
-import argparse
-import json
-import logging
-import subprocess
-import sys
-import time
+import argparse, json, logging, subprocess, sys, time
 from pathlib import Path
 
-# shared paths.py (now under helpers/)
 try:
-    import paths  # if a shim exists alongside the script
+    import paths
 except Exception:
-    from helpers import paths  # real location under src/media_generator/helpers
+    from helpers import paths
 
-ROOT = Path(__file__).resolve().parent
 PLAN = paths.OUTPUTS / "plan.json"
 CODE = paths.CODE_ROOT  # src/media_generator
 
 def exists_plan() -> bool:
-    if not PLAN.exists():
-        return False
+    if not PLAN.exists(): return False
     try:
         data = json.loads(PLAN.read_text(encoding="utf-8"))
     except Exception:
@@ -60,54 +37,70 @@ def run_step(name: str, cmd: list[str]) -> None:
     dt = time.perf_counter() - t0
     logging.info("[%s] OK in %.1fs", name, dt)
 
-# ---------- command builders ----------
-def tts_cmd_piper(a: argparse.Namespace) -> list[str]:
-    return [
-        sys.executable, str(CODE / "gen_tts_piper.py"),
-        "--plan", str(PLAN),
-        "--outdir", str(paths.OUTPUTS / "audio"),
-    ]
+# ---------- builders ----------
+def gloo_cmd(a: argparse.Namespace) -> list[str]:
+    cmd = [sys.executable, str(CODE / "gen_llm_gloo.py")]
+    if a.clips and a.clips > 0:
+        cmd += ["--clips", str(a.clips)]
+    return cmd
 
-def tts_cmd_eleven(a: argparse.Namespace) -> list[str]:
-    return [
-        sys.executable, str(CODE / "gen_tts_11labs.py"),
-        "--plan", str(PLAN),
-        "--outdir", str(paths.OUTPUTS / "audio"),
-    ]
+def translate_cmd(a: argparse.Namespace) -> list[str]:
+    return [sys.executable, str(CODE / "gen_plan_translate.py"),
+            "--plan", str(PLAN),
+            "--language", a.language]
 
-def img_cmd_sd(a: argparse.Namespace) -> list[str]:
-    return [
-        sys.executable, str(CODE / "gen_img_sd.py"),
-        "--plan", str(PLAN),
-        "--outdir", str(paths.OUTPUTS / "images"),
-    ]
+def tts_cmd(a: argparse.Namespace) -> list[str]:
+    if a.tts == "piper":
+        return [sys.executable, str(CODE / "gen_tts_piper.py"),
+                "--plan", str(PLAN),
+                "--outdir", str(paths.OUTPUTS / "audio")]
+    return [sys.executable, str(CODE / "gen_tts_11labs.py"),
+            "--plan", str(PLAN),
+            "--outdir", str(paths.OUTPUTS / "audio"),
+            "--language", a.language]
 
-def img_cmd_gemini(a: argparse.Namespace) -> list[str]:
-    return [
-        sys.executable, str(CODE / "gen_img_gemini.py"),
-        "--plan", str(PLAN),
-        "--outdir", str(paths.OUTPUTS / "images"),
-    ]
+def img_cmd(a: argparse.Namespace) -> list[str]:
+    if a.img == "sd":
+        return [sys.executable, str(CODE / "gen_img_sd.py"),
+                "--plan", str(PLAN),
+                "--outdir", str(paths.OUTPUTS / "images")]
+    return [sys.executable, str(CODE / "gen_img_gemini.py"),
+            "--plan", str(PLAN),
+            "--outdir", str(paths.OUTPUTS / "images"),
+            "--style-preset", a.style_preset]
 
-def video_cmd(a: argparse.Namespace) -> list[str]:
-    # Do NOT pass --out; let video_compose auto-name from title
-    return [
-        sys.executable, str(CODE / "gen_vid_moviepy.py"),
-        "--plan", str(PLAN),
-        "--imgdir", str(paths.OUTPUTS / "images"),
-        "--audiodir", str(paths.OUTPUTS / "audio"),
-        "--outdir", str(paths.OUTPUTS / "video"),
-    ]
+def compose_cmd(a: argparse.Namespace, source: str) -> list[str]:
+    return [sys.executable, str(CODE / "gen_vid_moviepy.py"),
+            "--plan", str(PLAN),
+            "--source", source,
+            "--imgdir", str(paths.OUTPUTS / "images"),
+            "--veodir", str(paths.OUTPUTS / "video_veo"),
+            "--audiodir", str(paths.OUTPUTS / "audio"),
+            "--outdir", str(paths.OUTPUTS / "video")]
 
 def build_parser() -> argparse.ArgumentParser:
-    p = argparse.ArgumentParser(description="Simple orchestrator")
-    p.add_argument("--only", choices=["gloo", "tts", "img", "video"])
+    p = argparse.ArgumentParser(description="Video generation orchestrator")
+    p.add_argument("--only", choices=["gloo", "translate", "tts", "img", "video"])
     p.add_argument("--skip-gloo", action="store_true")
+    p.add_argument("--skip-translate", action="store_true")
     p.add_argument("--skip-tts", action="store_true")
     p.add_argument("--skip-img", action="store_true")
     p.add_argument("--skip-video", action="store_true")
+
+    # Defaults you requested
     p.add_argument("--tts", choices=["piper", "elevenlabs"], default="piper")
     p.add_argument("--img", choices=["sd", "gemini"], default="sd")
+    p.add_argument("--source", choices=["images", "veo"], default="images")
+
+    # Language for TTS (English = no translation)
+    p.add_argument("--language", choices=["english", "spanish", "japanese"], default="english")
+
+    # Style preset for visual generators
+    p.add_argument("--style-preset", choices=["storybook", "oil", "photo"], default="storybook")
+
+    # Clip count for Gloo
+    p.add_argument("--clips", type=int, default=0, help="Exact number of clips (1–10). 0 uses template default 6–8.")
+
     p.add_argument("--log", default="INFO", choices=["DEBUG", "INFO", "WARNING", "ERROR"])
     return p
 
@@ -116,44 +109,45 @@ def main() -> None:
     logging.basicConfig(level=getattr(logging, a.log), format="%(message)s")
 
     def enabled(stage: str) -> bool:
-        if a.only and stage != a.only:
-            return False
-        if stage == "gloo" and a.skip_gloo:   return False
-        if stage == "tts"  and a.skip_tts:    return False
-        if stage == "img"  and a.skip_img:    return False
-        if stage == "video"and a.skip_video:  return False
-        return True
+        if a.only and stage != a.only: return False
+        return not ((stage == "gloo" and a.skip_gloo) or
+                    (stage == "translate" and a.skip_translate) or
+                    (stage == "tts"  and a.skip_tts)  or
+                    (stage == "img"  and a.skip_img)  or
+                    (stage == "video"and a.skip_video))
 
     logging.info("CODE=%s", paths.CODE_ROOT)
 
-    # 1) GLOO
+    # 1) GLOO (always English prompts/instructions)
     if enabled("gloo"):
-        run_step("GLOO", [sys.executable, str(CODE / "gen_llm_gloo.py")])
+        run_step("GLOO", gloo_cmd(a))
     else:
         logging.info("[GLOO] skipped")
 
     if not exists_plan():
-        logging.error("plan.json missing or empty")
-        sys.exit(2)
+        logging.error("plan.json missing or empty"); sys.exit(2)
     logging.info("[PLAN] %s — Title: %s", PLAN, load_title())
 
-    # 2) TTS
-    if enabled("tts"):
-        run_step("TTS", tts_cmd_piper(a) if a.tts == "piper" else tts_cmd_eleven(a))
-    else:
-        logging.info("[TTS] skipped")
+    # 2) Translate speech fields if needed for TTS
+    if a.language != "english":
+        if enabled("translate"):
+            run_step("TRANSLATE", translate_cmd(a))
+        else:
+            logging.info("[TRANSLATE] skipped")
+        if not exists_plan():
+            logging.error("plan.json missing or empty after translate"); sys.exit(2)
 
-    # 3) IMG
-    if enabled("img"):
-        run_step("IMG", img_cmd_sd(a) if a.img == "sd" else img_cmd_gemini(a))
-    else:
-        logging.info("[IMG] skipped")
+    # 3) TTS
+    if enabled("tts"): run_step("TTS", tts_cmd(a))
+    else: logging.info("[TTS] skipped")
 
-    # 4) VIDEO
-    if enabled("video"):
-        run_step("VIDEO", video_cmd(a))
-    else:
-        logging.info("[VIDEO] skipped")
+    # 4) IMG
+    if enabled("img"): run_step("IMG", img_cmd(a))
+    else: logging.info("[IMG] skipped")
+
+    # 5) Compose
+    if enabled("video"): run_step("VIDEO", compose_cmd(a, a.source))
+    else: logging.info("[VIDEO] skipped")
 
     logging.info("DONE")
 

@@ -1,5 +1,5 @@
 {
-  "$id": "PlanV2",
+  "$id": "PlanV2_2",
   "type": "object",
   "required": ["title", "target_length_sec", "clips"],
   "properties": {
@@ -7,7 +7,7 @@
     "target_length_sec": { "type": "number", "minimum": 30, "maximum": 600 },
     "clips": {
       "type": "array",
-      "minItems": 6,
+      "minItems": 1,
       "maxItems": 10,
       "items": {
         "type": "object",
@@ -28,6 +28,7 @@
             "additionalProperties": false
           },
           "image_prompt": { "type": "string", "minLength": 10 },
+          "video_motion_prompt": { "type": ["string", "null"], "minLength": 0 },
           "subtitle": { "type": "string", "minLength": 3, "maxLength": 100 }
         },
         "additionalProperties": false

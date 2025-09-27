@@ -1,6 +1,10 @@
 Return ONLY valid JSON. No prose, no markdown.
 
-Task: Plan a short Christian video from user input. Produce 6–10 clips. Each clip must provide LONGER speech (≈8–12 seconds). Some clips can be dialogue, others scripture reading, or both. Choose the best image idea per clip that reflects the words.
+Task: Plan a short Christian video from user input for Church/school audiences. Produce 6–10 clips with clean, family-safe content.
+
+Clip count:
+- If CLIP_COUNT is provided as a positive integer, produce exactly that many clips.
+- Otherwise produce 6–8 clips.
 
 Schema:
 {
@@ -12,20 +16,31 @@ Schema:
       "start_sec": number,
       "end_sec": number,
       "mode": "dialogue" | "verse" | "both",
-      "dialogue_text": "string | null",        // paraphrased guidance, TTS-friendly
-      "verse": { "ref": "Book ch:vs", "text": "string" } | null, // include VERSE TEXT for TTS
-      "image_prompt": "string",                 // concrete, single scene, reflects words
-      "subtitle": "string"                      // concise on-screen text
+      "dialogue_text": "string | null",
+      "verse": { "ref": "Book ch:vs", "text": "string" } | null,
+      "image_prompt": "string",
+      "video_motion_prompt": "string | null",
+      "subtitle": "string"
     }
   ]
 }
 
 Rules:
-- 6–10 clips. start_sec/end_sec strictly increasing. end_sec > start_sec.
-- Aim for 8–12s of speech per clip. Make dialogue_text substantial. If mode is "verse" or "both", include verse.text.
-- Dialogue must be biblical and pastoral. Verse.text must be accurate to a widely-used translation (KJV/ESV/NIV style). Keep quotes only in verse.text.
-- Do NOT include URLs, watermarks, or typography in image_prompt. Prefer concrete nouns, time of day, lighting, and composition cues. 16:9 framing implied.
-- Subtitles summarize the spoken line(s) in ≤ 100 chars.
+- start_sec/end_sec strictly increasing. end_sec > start_sec.
+- Aim for ~6–10s spoken content per clip. If mode is "verse" or "both", include verse.text.
+- Tone: biblical, pastoral, child-friendly. Avoid graphic depictions; paraphrase dark passages to a non-violent, non-graphic summary.
+- image_prompt: describe the concrete scene only (time period, time of day, buildings, clothing, people count and placement, animals, environment, lighting, composition). NO style/brand words. NO text/typography/watermarks/logos. 16:9 framing implied. (Renderers apply visual style presets.)
+- video_motion_prompt: short camera/action directive (e.g., "slow push-in; soft breeze moving fabric"). Describe what moves and how. No dialogue or lyrics.
+- subtitle: ≤100 chars, non-empty, faithful to the spoken content.
 - Output pure JSON.
+
+Safety:
+- Forbid: nudity, suggestive content, gore, blood, weapons, torture, occult themes, horror.
+- Keep attire modest. No romantic intimacy. No graphic violence.
+- Use KJV/ESV/NIV-like phrasing for verse.ref; dialogue_text should be paraphrased and TTS-friendly.
+
 User input:
 {{USER_PROMPT}}
+
+CLIP_COUNT:
+{{CLIP_COUNT}}

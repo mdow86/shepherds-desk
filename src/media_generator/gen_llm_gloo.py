@@ -1,34 +1,17 @@
 #!/usr/bin/env python3
-"""
-Call Gloo chat completions, validate JSON, write plan.json, print summary.
-
-Outputs:
-  paths.OUTPUTS / "plan.json"
-
-Resources (resolved via helpers.paths):
-  inputs:    paths.INPUTS   (user_intent.json)
-  schemas:   paths.SCHEMAS  (plan_schema.json)
-  templates: paths.TEMPLATES (llm_plan_prompt.txt)
-"""
 from __future__ import annotations
-
-import json
-import sys
+import argparse, json, sys
 from pathlib import Path
 from typing import Any, Dict, List
-
 import requests
 
-# --- project paths (helpers.paths) ---
 try:
-    # if a shim sits alongside this file
-    import paths  # type: ignore
+    import paths
 except Exception:
-    # canonical location under src/media_generator/helpers
-    from helpers import paths  # type: ignore
+    from helpers import paths
 
-CODE = Path(paths.CODE_ROOT)            # src/media_generator
-OUTPUTS_DIR = Path(paths.OUTPUTS)       # .../packages/generator/outputs
+CODE = Path(paths.CODE_ROOT)
+OUTPUTS_DIR = Path(paths.OUTPUTS)
 OUTPUT_PLAN_PATH = OUTPUTS_DIR / "plan.json"
 
 SCHEMA_PATH = Path(paths.SCHEMAS) / "plan_schema.json"
@@ -37,28 +20,20 @@ INPUT_PATH = Path(paths.INPUTS) / "user_intent.json"
 
 API_URL = "https://platform.ai.gloo.com/ai/v1/chat/completions"
 
-# --- auth + validators + mappers ---
 try:
-    # canonical location
     from helpers.gloo_access_token import get_bearer_header
 except Exception:
-    # fallback if this file is run from inside helpers
     from gloo_access_token import get_bearer_header  # type: ignore
 
 try:
     from helpers.validators.json_validate import load_schema, parse_and_validate
 except Exception as e:
-    print(f"Missing helpers.validators.json_validate: {e}", file=sys.stderr)
-    sys.exit(2)
+    print(f"Missing helpers.validators.json_validate: {e}", file=sys.stderr); sys.exit(2)
 
 try:
     from helpers.jobs.mappers import plan_to_image_jobs, plan_to_tts_jobs, summarize_jobs
 except Exception as e:
-    print(f"Missing helpers.jobs.mappers: {e}", file=sys.stderr)
-    sys.exit(2)
-
-
-# ------------------------- small I/O helpers -------------------------
+    print(f"Missing helpers.jobs.mappers: {e}", file=sys.stderr); sys.exit(2)
 
 def _read_json(path: Path) -> Dict[str, Any]:
     try:
@@ -68,24 +43,23 @@ def _read_json(path: Path) -> Dict[str, Any]:
     except json.JSONDecodeError as e:
         print(f"Invalid JSON: {path}: {e}", file=sys.stderr); sys.exit(1)
 
+def load_user_input() -> Dict[str, Any]:
+    return _read_json(INPUT_PATH)
 
-def load_user_prompt() -> str:
-    data = _read_json(INPUT_PATH)
-    prompt = (data.get("user_prompt") or "").strip()
-    if not prompt:
+def build_user_message(cli_clips: int | None) -> str:
+    data = load_user_input()
+    user_prompt = (data.get("user_prompt") or "").strip()
+    if not user_prompt:
         print(f"{INPUT_PATH} missing 'user_prompt'", file=sys.stderr); sys.exit(1)
-    return prompt
-
-
-def build_user_message() -> str:
+    file_cc = data.get("clip_count")
+    clip_count = cli_clips if (isinstance(cli_clips, int) and cli_clips > 0) else (file_cc if isinstance(file_cc, int) and file_cc > 0 else "")
     template = PROMPT_TEMPLATE_PATH.read_text(encoding="utf-8")
-    return template.replace("{{USER_PROMPT}}", load_user_prompt())
-
-
-# ------------------------- network call -------------------------
+    return (template
+            .replace("{{USER_PROMPT}}", user_prompt)
+            .replace("{{CLIP_COUNT}}", str(clip_count))
+            )
 
 def call_gloo(messages: List[Dict[str, str]], env_file: Path | None) -> str:
-    """Obtain Bearer header (reads .env if provided), call chat completions."""
     headers = get_bearer_header(str(env_file) if env_file else None)
     payload = {"model": "meta.llama3-70b-instruct-v1:0", "messages": messages}
     r = requests.post(API_URL, headers=headers, json=payload, timeout=60)
@@ -96,20 +70,19 @@ def call_gloo(messages: List[Dict[str, str]], env_file: Path | None) -> str:
     except Exception as e:
         raise RuntimeError(f"Unexpected response: {data}") from e
 
-
-# ------------------------- main -------------------------
-
 def main() -> None:
-    # Prefer a repo-local .env right under CODE_ROOT (src/media_generator/.env).
+    ap = argparse.ArgumentParser(description="Call Gloo to produce plan.json (English)")
+    ap.add_argument("--clips", type=int, default=0, help="Exact number of clips (1–10). 0 = let template choose 6–8")
+    args = ap.parse_args()
+
     env_file = (CODE.parent.parent) / ".env"
     if not env_file.exists():
-        print(f".env not found at {env_file}", file=sys.stderr)
-        sys.exit(2)
+        print(f".env not found at {env_file}", file=sys.stderr); sys.exit(2)
 
     OUTPUTS_DIR.mkdir(parents=True, exist_ok=True)
 
     system_msg = {"role": "system", "content": "You are a human-flourishing assistant."}
-    user_msg = {"role": "user", "content": build_user_message()}
+    user_msg = {"role": "user", "content": build_user_message(args.clips)}
     messages = [system_msg, user_msg]
 
     raw = call_gloo(messages, env_file=env_file)
@@ -127,7 +100,6 @@ def main() -> None:
     title = plan.get("title", "")
     print(f"Title: {title}")
     print(f"Clips: {len(plan.get('clips', []))} | {summarize_jobs(image_jobs, tts_jobs)}")
-
 
 if __name__ == "__main__":
     main()
