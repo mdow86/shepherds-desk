@@ -7,11 +7,11 @@ Compose into MP4.
               extend short clips by freezing last frame to fit audio + padding
 Writes .srt.
 
-Defaults (via paths.py)
+Now supports --clips to limit to the first N clips in plan.json.
 """
 from __future__ import annotations
 
-import argparse, json, re, sys, subprocess, tempfile
+import argparse, json, re, sys, subprocess
 from pathlib import Path
 from typing import List, Dict, Any
 
@@ -20,7 +20,7 @@ from moviepy.editor import (
     ImageClip, AudioFileClip, VideoFileClip,
     concatenate_videoclips, CompositeAudioClip
 )
-from moviepy.audio.AudioClip import AudioArrayClip
+from moviepy.audio.AudioClip import AudioArrayClip  # noqa: F401  (import kept for compatibility)
 
 try:
     import paths
@@ -104,14 +104,12 @@ def safe_video_open(path: Path) -> VideoFileClip:
     """
     try:
         v = VideoFileClip(str(path))
-        # Force a frame read to detect issues early
         _ = v.get_frame(0)
         return v
     except Exception:
-        # Normalize with ffmpeg
         norm = path.with_suffix(".norm.mp4")
         try:
-            ffmpeg = "ffmpeg"  # assumes in PATH (moviepy bundles one on most installs)
+            ffmpeg = "ffmpeg"
             cmd = [
                 ffmpeg, "-y", "-i", str(path),
                 "-vf", f"scale=trunc(iw/2)*2:trunc(ih/2)*2,fps={FPS}",
@@ -128,47 +126,43 @@ def safe_video_open(path: Path) -> VideoFileClip:
             raise RuntimeError(f"Failed to normalize Veo clip: {path}\n{e}")
 
 def freeze_extend(video: VideoFileClip, target_duration: float, fps: int) -> VideoFileClip:
-    """
-    Extend clip to target_duration by freezing last frame.
-    If grabbing the last frame fails, fall back to first frame. If that fails, use a black still.
-    """
     cur = float(video.duration or 0.0)
     if cur >= target_duration:
         try:
             return video.subclip(0, target_duration)
         except Exception:
-            pass  # fall through and try freeze path
+            pass
 
     pad = max(0.0, target_duration - max(0.0, cur))
     frame_t = max(0.0, (cur - (1.0 / fps)) if cur > 0 else 0.0)
 
-    # Try last frame
     still_frame = None
     try:
         still_frame = video.get_frame(frame_t)
     except Exception:
-        # Try first frame
         try:
             still_frame = video.get_frame(0)
         except Exception:
             pass
 
     if still_frame is None:
-        # Black fallback
-        import numpy as np
         still_frame = np.zeros((720, 1280, 3), dtype=np.uint8)
 
     still = ImageClip(still_frame, duration=pad).set_fps(fps)
     try:
         return concatenate_videoclips([video, still], method="compose")
     except Exception:
-        # If concatenation fails, return just the still of full target duration
         return ImageClip(still_frame, duration=target_duration).set_fps(fps)
 
-# -------- builders (images source) --------
-def build_video_images(plan_path: Path, img_dir: Path, aud_dir: Path, out_dir: Path, out_override: Path | None) -> None:
+# -------- core builders --------
+def slice_clips(clips: List[Dict[str, Any]], limit: int) -> List[Dict[str, Any]]:
+    if limit and limit > 0:
+        return clips[:limit]
+    return clips
+
+def build_video_images(plan_path: Path, img_dir: Path, aud_dir: Path, out_dir: Path, out_override: Path | None, limit: int) -> None:
     plan = load_plan(plan_path)
-    clips: List[Dict[str, Any]] = plan.get("clips", [])
+    clips: List[Dict[str, Any]] = slice_clips(plan.get("clips", []), limit)
     if not clips:
         print("No clips in plan.", file=sys.stderr); sys.exit(1)
 
@@ -208,7 +202,7 @@ def build_video_images(plan_path: Path, img_dir: Path, aud_dir: Path, out_dir: P
         s_start = t_cursor + (PAD_BEFORE if audio_dur > 0 else 0.0)
         s_end   = s_start + (audio_dur if audio_dur > 0 else duration)
         s_text  = clip_spoken_text(clip)
-        srt_rows.append((idx, s_start, s_end, s_text))
+        srt_rows.append((i, s_start, s_end, s_text))  # re-number 1..N
         t_cursor += duration
 
     final = concatenate_videoclips(segments, method="compose")
@@ -217,16 +211,15 @@ def build_video_images(plan_path: Path, img_dir: Path, aud_dir: Path, out_dir: P
 
     srt_path = out_path.with_suffix(".srt")
     lines = []
-    for idx, start, end, text in srt_rows:
-        lines += [f"{idx}", f"{to_srt_timestamp(start)} --> {to_srt_timestamp(end)}", srt_escape(text), ""]
+    for i, start, end, text in srt_rows:
+        lines += [f"{i}", f"{to_srt_timestamp(start)} --> {to_srt_timestamp(end)}", srt_escape(text), ""]
     srt_path.write_text("\n".join(lines), encoding="utf-8")
     print(f"Wrote: {out_path}")
     print(f"Wrote: {srt_path}")
 
-# -------- builders (veo source) --------
-def build_video_veo(plan_path: Path, veo_dir: Path, aud_dir: Path, out_dir: Path, out_override: Path | None) -> None:
+def build_video_veo(plan_path: Path, veo_dir: Path, aud_dir: Path, out_dir: Path, out_override: Path | None, limit: int) -> None:
     plan = load_plan(plan_path)
-    clips: List[Dict[str, Any]] = plan.get("clips", [])
+    clips: List[Dict[str, Any]] = slice_clips(plan.get("clips", []), limit)
     if not clips:
         print("No clips in plan.", file=sys.stderr); sys.exit(1)
 
@@ -245,7 +238,6 @@ def build_video_veo(plan_path: Path, veo_dir: Path, aud_dir: Path, out_dir: Path
         if not vid_path.exists():
             print(f"Missing Veo clip: {vid_path}", file=sys.stderr); sys.exit(1)
 
-        # Normalize if needed, then open
         try:
             vclip = safe_video_open(vid_path).set_fps(FPS)
         except Exception as e:
@@ -282,7 +274,7 @@ def build_video_veo(plan_path: Path, veo_dir: Path, aud_dir: Path, out_dir: Path
         s_start = t_cursor + (PAD_BEFORE if audio_dur > 0 else 0.0)
         s_end   = s_start + (audio_dur if audio_dur > 0 else target_duration)
         s_text  = clip_spoken_text(clip)
-        srt_rows.append((idx, s_start, s_end, s_text))
+        srt_rows.append((i, s_start, s_end, s_text))  # re-number 1..N
         t_cursor += target_duration
 
     final = concatenate_videoclips(segments, method="compose")
@@ -291,8 +283,8 @@ def build_video_veo(plan_path: Path, veo_dir: Path, aud_dir: Path, out_dir: Path
 
     srt_path = out_path.with_suffix(".srt")
     lines = []
-    for idx, start, end, text in srt_rows:
-        lines += [f"{idx}", f"{to_srt_timestamp(start)} --> {to_srt_timestamp(end)}", srt_escape(text), ""]
+    for i, start, end, text in srt_rows:
+        lines += [f"{i}", f"{to_srt_timestamp(start)} --> {to_srt_timestamp(end)}", srt_escape(text), ""]
     srt_path.write_text("\n".join(lines), encoding="utf-8")
     print(f"Wrote: {out_path}")
     print(f"Wrote: {srt_path}")
@@ -307,12 +299,13 @@ def main():
     ap.add_argument("--audiodir",   type=Path, default=AUDIODIR_DEFAULT)
     ap.add_argument("--out",        type=Path, default=None, help="Explicit output path")
     ap.add_argument("--outdir",     type=Path, default=VIDDIR_DEFAULT, help="Directory for auto-named outputs")
+    ap.add_argument("--clips",      type=int, default=0, help="If >0, only use first N clips from plan.json")
     args = ap.parse_args()
 
     if args.source == "images":
-        build_video_images(args.plan, args.imgdir, args.audiodir, args.outdir, args.out)
+        build_video_images(args.plan, args.imgdir, args.audiodir, args.outdir, args.out, args.clips)
     else:
-        build_video_veo(args.plan, args.veodir, args.audiodir, args.outdir, args.out)
+        build_video_veo(args.plan, args.veodir, args.audiodir, args.outdir, args.out, args.clips)
 
 if __name__ == "__main__":
     main()

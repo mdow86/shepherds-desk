@@ -69,37 +69,68 @@ def img_cmd(a: argparse.Namespace) -> list[str]:
             "--outdir", str(paths.OUTPUTS / "images"),
             "--style-preset", a.style_preset]
 
+def veo_img2vid_cmd(a: argparse.Namespace) -> list[str]:
+    cmd = [sys.executable, str(CODE / "gen_img2vid_veo.py"),
+           "--plan", str(PLAN),
+           "--imgdir", str(paths.OUTPUTS / "images"),
+           "--outdir", str(paths.OUTPUTS / "video_veo"),
+           "--model", a.veo_model,
+           "--aspect", a.veo_aspect,
+           "--style-preset", a.style_preset]
+    if a.veo_negative: cmd += ["--negative", a.veo_negative]
+    if a.veo_person_generation: cmd += ["--person-generation", a.veo_person_generation]
+    if a.veo_api_key: cmd += ["--api-key", a.veo_api_key]
+    if a.clips and a.clips > 0: cmd += ["--clips", str(a.clips)]
+    if a.veo_max_per_day and a.veo_max_per_day > 0:
+        cmd += ["--max-per-day", str(a.veo_max_per_day)]
+    return cmd
+
 def compose_cmd(a: argparse.Namespace, source: str) -> list[str]:
-    return [sys.executable, str(CODE / "gen_vid_moviepy.py"),
-            "--plan", str(PLAN),
-            "--source", source,
-            "--imgdir", str(paths.OUTPUTS / "images"),
-            "--veodir", str(paths.OUTPUTS / "video_veo"),
-            "--audiodir", str(paths.OUTPUTS / "audio"),
-            "--outdir", str(paths.OUTPUTS / "video")]
+    cmd = [sys.executable, str(CODE / "gen_vid_moviepy.py"),
+           "--plan", str(PLAN),
+           "--source", source,
+           "--imgdir", str(paths.OUTPUTS / "images"),
+           "--veodir", str(paths.OUTPUTS / "video_veo"),
+           "--audiodir", str(paths.OUTPUTS / "audio"),
+           "--outdir", str(paths.OUTPUTS / "video")]
+    if a.clips and a.clips > 0:
+        cmd += ["--clips", str(a.clips)]
+    return cmd
+
 
 def build_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(description="Video generation orchestrator")
-    p.add_argument("--only", choices=["gloo", "translate", "tts", "img", "video"])
+    p.add_argument("--only", choices=["gloo", "translate", "tts", "img", "img2vid", "video"])
     p.add_argument("--skip-gloo", action="store_true")
     p.add_argument("--skip-translate", action="store_true")
     p.add_argument("--skip-tts", action="store_true")
     p.add_argument("--skip-img", action="store_true")
+    p.add_argument("--skip-img2vid", action="store_true")
     p.add_argument("--skip-video", action="store_true")
 
-    # Defaults you requested
+    # pipeline options
     p.add_argument("--tts", choices=["piper", "elevenlabs"], default="piper")
     p.add_argument("--img", choices=["sd", "gemini"], default="sd")
+
+    # source controls the compositor behavior and whether img2vid runs
     p.add_argument("--source", choices=["images", "veo"], default="images")
 
-    # Language for TTS (English = no translation)
+    # Language for TTS
     p.add_argument("--language", choices=["english", "spanish", "japanese"], default="english")
 
-    # Style preset for visual generators
+    # Style preset for visual generators and Veo
     p.add_argument("--style-preset", choices=["storybook", "oil", "photo"], default="storybook")
 
-    # Clip count for Gloo
-    p.add_argument("--clips", type=int, default=0, help="Exact number of clips (1–10). 0 uses template default 6–8.")
+    # Clip count for Gloo and Veo limiter
+    p.add_argument("--clips", type=int, default=0, help="Exact number of clips (1–10). 0 uses template default.")
+
+    # Veo settings
+    p.add_argument("--veo-model", default="veo-3.0-fast-generate-001")
+    p.add_argument("--veo-aspect", choices=["16:9", "9:16"], default="16:9")
+    p.add_argument("--veo-negative", default="")
+    p.add_argument("--veo-person-generation", choices=["", "allow_all", "allow_adult", "dont_allow"], default="")
+    p.add_argument("--veo-api-key", default="")
+    p.add_argument("--veo-max-per-day", type=int, default=0)
 
     p.add_argument("--log", default="INFO", choices=["DEBUG", "INFO", "WARNING", "ERROR"])
     return p
@@ -114,11 +145,12 @@ def main() -> None:
                     (stage == "translate" and a.skip_translate) or
                     (stage == "tts"  and a.skip_tts)  or
                     (stage == "img"  and a.skip_img)  or
+                    (stage == "img2vid" and a.skip_img2vid) or
                     (stage == "video"and a.skip_video))
 
     logging.info("CODE=%s", paths.CODE_ROOT)
 
-    # 1) GLOO (always English prompts/instructions)
+    # 1) GLOO
     if enabled("gloo"):
         run_step("GLOO", gloo_cmd(a))
     else:
@@ -128,12 +160,10 @@ def main() -> None:
         logging.error("plan.json missing or empty"); sys.exit(2)
     logging.info("[PLAN] %s — Title: %s", PLAN, load_title())
 
-    # 2) Translate speech fields if needed for TTS
+    # 2) Translate
     if a.language != "english":
-        if enabled("translate"):
-            run_step("TRANSLATE", translate_cmd(a))
-        else:
-            logging.info("[TRANSLATE] skipped")
+        if enabled("translate"): run_step("TRANSLATE", translate_cmd(a))
+        else: logging.info("[TRANSLATE] skipped")
         if not exists_plan():
             logging.error("plan.json missing or empty after translate"); sys.exit(2)
 
@@ -144,6 +174,11 @@ def main() -> None:
     # 4) IMG
     if enabled("img"): run_step("IMG", img_cmd(a))
     else: logging.info("[IMG] skipped")
+
+    # 4.5) IMG2VID (Veo) — run only when source=veo
+    if a.source == "veo":
+        if enabled("img2vid"): run_step("IMG2VID", veo_img2vid_cmd(a))
+        else: logging.info("[IMG2VID] skipped")
 
     # 5) Compose
     if enabled("video"): run_step("VIDEO", compose_cmd(a, a.source))
