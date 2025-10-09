@@ -18,23 +18,24 @@
   <a href="#web-ui-preview-wip">Web UI (WIP)</a>
 </p>
 
-<!-- Example video block -->
+<!-- Example video block (original layout) -->
 <div align="center">
   <details open>
     <summary><strong>Example video</strong></summary>
-
     <video controls width="640">
       <source src="https://cljoublxczrhioqvqssy.supabase.co/storage/v1/object/public/videos/break-free-from-ai-slop_014.mp4" type="video/mp4">
       Your browser does not support the video tag.
     </video>
-
-    <p>
-      <a href="https://cljoublxczrhioqvqssy.supabase.co/storage/v1/object/public/videos/break-free-from-ai-slop_014.mp4">
-        Break Free from AI Slop — open in browser for fullscreen
-      </a>
-    </p>
   </details>
 </div>
+
+<p align="center">
+  <a href="https://cljoublxczrhioqvqssy.supabase.co/storage/v1/object/public/videos/break-free-from-ai-slop_014.mp4">
+    Break Free from AI Slop — open in browser for fullscreen
+  </a>
+</p>
+
+---
 
 ---
 
@@ -42,7 +43,7 @@
 1. **Script** — Generate a JSON “movie script” with <strong>Gloo</strong>.
 2. **Voices** — Per-clip dialogue with <strong>ElevenLabs</strong> (or <strong>Piper</strong> locally).
 3. **Images** — Create frames via <strong>Google Gemini Flash</strong> (or <strong>Stable Diffusion</strong> locally).
-4. **Img→Vid (optional)** — Animate each image with <strong>Veo Fast</strong> for low cost.
+4. **Img→Vid (optional)** — Animate each image with <strong>Veo Fast</strong> or VideoGenAPI.
 5. **Edit** — Stitch with <strong>MoviePy</strong>, write <code>.mp4</code> and subtitles <code>.srt</code>.
 
 Open-source fallbacks are supported: **Stable Diffusion** for images and **Piper** for TTS.
