@@ -1,15 +1,14 @@
-<table>
-  <tr>
-    <td width="180" valign="top">
-      <img src="assets/shepherds_Desk_logo.png" alt="Shepherd’s Desk logo" width="160">
-    </td>
-    <td valign="top">
-      <h1>Shepherd’s Desk</h1>
-      <p><em>Guiding Media Toward Meaning</em></p>
-      <p><strong>What it is:</strong> a faith‑driven media pipeline that turns ideas into short videos. It orchestrates an LLM “script” → speech → images → optional image‑to‑video → final edit. Built with the <a href="https://www.gloo.us/">Gloo API</a> to encourage Christ‑centered creation over passive scrolling.</p>
-    </td>
-  </tr>
-</table>
+<p align="center">
+  <img src="assets/shepherds_Desk_logo.png" alt="Shepherd’s Desk logo" width="260">
+</p>
+
+<h1 align="center">Shepherd’s Desk</h1>
+<p align="center"><em>Guiding Media Toward Meaning</em></p>
+<p align="center">
+  <strong>What it is:</strong> a faith-driven media pipeline that turns ideas into short videos.
+  It orchestrates an LLM “script” → speech → images → optional image-to-video → final edit.
+  Built with the <a href="https://www.gloo.us/">Gloo API</a> to encourage Christ-centered creation over passive scrolling.
+</p>
 
 <p align="center">
   <a href="#quickstart">Quickstart</a> •
@@ -19,16 +18,34 @@
   <a href="#web-ui-preview-wip">Web UI (WIP)</a>
 </p>
 
+<!-- Example video block -->
+<div align="center">
+  <details open>
+    <summary><strong>Example video</strong></summary>
+
+    <video controls width="640">
+      <source src="https://cljoublxczrhioqvqssy.supabase.co/storage/v1/object/public/videos/break-free-from-ai-slop_014.mp4" type="video/mp4">
+      Your browser does not support the video tag.
+    </video>
+
+    <p>
+      <a href="https://cljoublxczrhioqvqssy.supabase.co/storage/v1/object/public/videos/break-free-from-ai-slop_014.mp4">
+        Break Free from AI Slop — open in browser for fullscreen
+      </a>
+    </p>
+  </details>
+</div>
+
 ---
 
 ## Pipeline
 1. **Script** — Generate a JSON “movie script” with <strong>Gloo</strong>.
-2. **Voices** — Per‑clip dialogue with <strong>ElevenLabs</strong> (or <strong>Piper</strong> locally).
+2. **Voices** — Per-clip dialogue with <strong>ElevenLabs</strong> (or <strong>Piper</strong> locally).
 3. **Images** — Create frames via <strong>Google Gemini Flash</strong> (or <strong>Stable Diffusion</strong> locally).
 4. **Img→Vid (optional)** — Animate each image with <strong>Veo Fast</strong> for low cost.
 5. **Edit** — Stitch with <strong>MoviePy</strong>, write <code>.mp4</code> and subtitles <code>.srt</code>.
 
-Open‑source fallbacks are supported: **Stable Diffusion** for images and **Piper** for TTS.
+Open-source fallbacks are supported: **Stable Diffusion** for images and **Piper** for TTS.
 
 ---
 
@@ -51,7 +68,6 @@ venv\Scripts\activate
 # 3) Install
 pip install -U pip
 pip install -r requirements.txt
-```
 
 ### Configure credentials
 Set these as env vars (or in a `.env` file). Provide only what you use.

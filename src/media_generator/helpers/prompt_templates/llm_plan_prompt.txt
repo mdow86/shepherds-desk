@@ -5,6 +5,7 @@ Task: Plan a short Christian video from user input for Church/school audiences. 
 Clip count:
 - If CLIP_COUNT is provided as a positive integer, produce exactly that many clips.
 - Otherwise produce 6–8 clips.
+- If the narration cannot fit the per-clip word limits, split into more clips even if the user specified a fixed count.
 
 Schema:
 {
@@ -26,18 +27,44 @@ Schema:
 }
 
 Rules:
-- start_sec/end_sec strictly increasing. end_sec > start_sec.
-- Aim for ~6–10s spoken content per clip. If mode is "verse" or "both", include verse.text.
-- Tone: biblical, pastoral, child-friendly. Avoid graphic depictions; paraphrase dark passages to a non-violent, non-graphic summary.
-- image_prompt: describe the concrete scene only (time period, time of day, buildings, clothing, people count and placement, animals, environment, lighting, composition). NO style/brand words. NO text/typography/watermarks/logos. 16:9 framing implied. (Renderers apply visual style presets.)
-- video_motion_prompt: short camera/action directive (e.g., "slow push-in; soft breeze moving fabric"). Describe what moves and how. No dialogue or lyrics.
-- subtitle: ≤100 chars, non-empty, faithful to the spoken content.
-- Output pure JSON.
+- Treat dialogue_text as NARRATION (voiceover). No character lip-sync.
+- Per-clip length: exactly 5.0 seconds by default. Set end_sec = start_sec + 5.
+- Narration words per clip MUST be 6–12 inclusive. Keep language plain, rhythmic, and memorable.
+- start_sec/end_sec strictly increasing. No overlaps. end_sec > start_sec.
+- If mode is "verse" or "both", include verse.text. If the verse is long, split it across multiple 5s clips and keep each narration segment 6–12 words.
+- Tone: biblical, pastoral, child-friendly. Avoid graphic depictions; paraphrase dark passages non-violently.
+- Subtitles: ≤100 chars, faithful to the narration, title-style or sentence-style is fine.
+
+IMAGE PROMPT QUALITY (write for image generators):
+- Describe the concrete scene in 1–2 tight sentences. No brand/style words. No text/typography/watermarks/logos. 16:9 framing implied.
+- Be specific and grounded:
+  • SUBJECTS: exact count, age range, modest attire, posture, facial expressions, skin tones described neutrally.
+  • SETTING & ERA: architecture/materials accurate to context; indoor/outdoor; terrain; vegetation; relevant props.
+  • LIGHTING: time of day, weather, light direction/quality (e.g., warm backlight, soft overcast), color temperature.
+  • CAMERA & COMPOSITION: shot size (wide/medium/close), perspective, depth of field, foreground/midground/background elements, left/right/center placement.
+  • TEXTURES: stone/wood/fabric, reflections, shadows/highlights.
+- Example style (do NOT copy words, follow structure):
+  “A crowded city sidewalk at noon; five teens of mixed backgrounds in modest clothing walk toward camera, eyes fixed on phones; storefronts and bus stop behind; hard sunlight from right casting short shadows; medium-wide shot, eye level, shallow depth with soft bokeh.”
+
+VIDEO MOTION PROMPT QUALITY (write for image-to-video models, 5s single shot):
+- Present tense. One continuous shot. Start→middle→end in one sentence or two.
+- Include camera path and subject/environment motion with spatial anchors.
+  • Camera: slow push-in/out, gentle pan/tilt, low dolly; say direction and speed.
+  • Subjects: who moves, how far, relative to frame edges or landmarks.
+  • Environment: leaves/breeze, light rays, people crossing background, screens flickering, etc.
+- No dialogue or on-screen text.
+- Example pattern:
+  “Slow push-in from center as the anchor glances down at a phone on desk, then looks up; ticker screens flicker softly in background; end on a steady close framing.”
 
 Safety:
 - Forbid: nudity, suggestive content, gore, blood, weapons, torture, occult themes, horror.
 - Keep attire modest. No romantic intimacy. No graphic violence.
-- Use KJV/ESV/NIV-like phrasing for verse.ref; dialogue_text should be paraphrased and TTS-friendly.
+- Use KJV/ESV/NIV-like phrasing for verse.ref; narration should be paraphrased and TTS-friendly.
+
+Output shaping:
+- Favor short, punchy narration like broadcast or trailer lines.
+- If a concept needs more visual coverage, split into multiple 5s clips with varied camera/framing.
+- Avoid generic image_prompt like “Jesus with disciples.” Always specify count, setting cues, lighting, and composition.
 
 User input:
 {{USER_PROMPT}}

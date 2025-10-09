@@ -4,12 +4,13 @@ import argparse, json, sys, time, re, os
 from pathlib import Path
 from io import BytesIO
 from datetime import datetime, timezone
-from typing import Dict, Any, Optional
+from typing import Dict, Any, Optional, Tuple
 
 from dotenv import load_dotenv, find_dotenv
 from google import genai
 from google.genai import types
 from PIL import Image, ImageFilter
+import requests
 
 try:
     import paths
@@ -20,6 +21,7 @@ DEFAULT_PLAN   = paths.OUTPUTS / "plan.json"
 DEFAULT_OUTDIR = paths.OUTPUTS / "images"
 DEFAULT_MODEL  = "gemini-2.5-flash-image-preview"
 DEFAULT_STATE  = paths.OUTPUTS / "gemini_state.json"
+REMOTE_MAP     = paths.OUTPUTS / "remote_map.json"
 
 # -------- style presets --------
 STYLE_PRESETS = {
@@ -146,8 +148,32 @@ def try_generate_image(client: genai.Client, model: str, prompt: str, negative: 
         pass
     return None
 
+# ---------------- Supabase upload ----------------
+def _sb_urls() -> Tuple[str, str]:
+    base = (os.getenv("SUPABASE_URL") or "").rstrip("/")
+    if not base:
+        print("Missing SUPABASE_URL in env", file=sys.stderr); sys.exit(2)
+    return base, f"{base}/storage/v1"
+
+def upload_to_supabase_png(bucket: str, object_path: str, data: bytes, upsert: bool = True) -> str:
+    base, api = _sb_urls()
+    svc = os.getenv("SUPABASE_SERVICE_KEY") or os.getenv("SUPABASE_ANON_KEY") or ""
+    if not svc:
+        print("Missing SUPABASE_SERVICE_KEY (preferred) or SUPABASE_ANON_KEY", file=sys.stderr); sys.exit(2)
+    url = f"{api}/object/{bucket}/{object_path.strip('/')}"
+    headers = {
+        "Authorization": f"Bearer {svc}",
+        "apikey": svc,                     # required by Supabase edge
+        "Content-Type": "image/png",
+        "x-upsert": "true" if upsert else "false",
+    }
+    r = requests.post(url, headers=headers, data=data, timeout=60)
+    if r.status_code not in (200, 201):
+        print(f"[SUPABASE] upload failed {r.status_code}: {r.text[:300]}", file=sys.stderr); sys.exit(2)
+    return f"{api}/object/public/{bucket}/{object_path.strip('/')}"
+
 def main() -> None:
-    ap = argparse.ArgumentParser(description="Generate images via Gemini 2.5 Flash Image")
+    ap = argparse.ArgumentParser(description="Generate images via Gemini and save to Supabase or local")
     ap.add_argument("--plan", type=Path, default=DEFAULT_PLAN)
     ap.add_argument("--outdir", type=Path, default=DEFAULT_OUTDIR)
     ap.add_argument("--model", type=str, default=DEFAULT_MODEL)
@@ -155,9 +181,16 @@ def main() -> None:
     ap.add_argument("--state-file", type=Path, default=DEFAULT_STATE)
     ap.add_argument("--max-per-day", type=int, default=0)
     ap.add_argument("--api-key", type=str, default="")
-    args = ap.parse_args()
 
+    # new controls
+    ap.add_argument("--save-dest", choices=["supabase","local"], default="supabase")
+    ap.add_argument("--sb-bucket", type=str, default=os.getenv("SUPABASE_BUCKET") or "SUPABASE_BUCKET")
+    ap.add_argument("--sb-prefix", type=str, default=os.getenv("JOB_PREFIX") or "jobs/manual-run")
+    ap.add_argument("--also-save-local", action="store_true")
+
+    args = ap.parse_args()
     load_dotenv(find_dotenv())
+
     key = args.api_key or os.getenv("GEMINI_API_KEY") or os.getenv("GOOGLE_API_KEY")
     if not key:
         print("Missing GEMINI_API_KEY/GOOGLE_API_KEY", file=sys.stderr); sys.exit(1)
@@ -173,7 +206,16 @@ def main() -> None:
     style_suffix, style_neg = preset["style"], preset["negative"]
 
     client = genai.Client(api_key=key)
-    print(f"Model: {args.model} | style={args.style_preset}")
+    print(f"Model: {args.model} | style={args.style_preset} | save={args.save_dest}")
+
+    # load existing remote map to preserve any prior entries
+    if REMOTE_MAP.exists():
+        try:
+            remote_map: Dict[str,str] = json.loads(REMOTE_MAP.read_text(encoding="utf-8"))
+        except Exception:
+            remote_map = {}
+    else:
+        remote_map = {}
 
     generated = 0
     total = len(clips)
@@ -210,21 +252,43 @@ def main() -> None:
             print(f"[clip{idx}] retry with scene-only fallback")
             img_bytes = try_generate_image(client, args.model, prompt3, f"{BASE_NEG}, {style_neg}")
 
-        out_path = args.outdir / f"clip{idx}.png"
+        local_path = args.outdir / f"clip{idx}.png"
+        object_path = f"{args.sb_prefix.strip('/')}/clip{idx}.png"
+
         if img_bytes:
-            try:
-                Image.open(BytesIO(img_bytes)).save(out_path)
-            except Exception:
-                out_path.write_bytes(img_bytes)
+            if args.save_dest == "supabase":
+                public_url = upload_to_supabase_png(args.sb_bucket, object_path, img_bytes, upsert=True)
+                remote_map[str(idx)] = public_url
+                if args.also_save_local:
+                    try:
+                        Image.open(BytesIO(img_bytes)).save(local_path)
+                    except Exception:
+                        local_path.write_bytes(img_bytes)
+            else:
+                try:
+                    Image.open(BytesIO(img_bytes)).save(local_path)
+                except Exception:
+                    local_path.write_bytes(img_bytes)
+                base, api = _sb_urls()
+                remote_map[str(idx)] = f"{api}/object/public/{args.sb_bucket}/{object_path}"
+
             incr_daily(args.state_file)
             generated += 1
             time.sleep(0.15)
             continue
 
-        print(f"[clip{idx}] no image returned after retries; writing placeholder", file=sys.stderr)
-        make_placeholder().save(out_path, format="PNG")
+        make_placeholder().save(local_path, format="PNG")
 
-    print(f"Done. Wrote {generated} generated image(s) (+ placeholders if needed) → {args.outdir.resolve()}")
+    REMOTE_MAP.parent.mkdir(parents=True, exist_ok=True)
+    REMOTE_MAP.write_text(json.dumps(remote_map, indent=2), encoding="utf-8")
+    print(f"Updated {REMOTE_MAP}")
+
+    print(f"Done. Wrote {generated} generated image(s). Destination={args.save_dest}.")
+    if args.save_dest == "supabase":
+        print(f"Bucket={args.sb_bucket} Prefix={args.sb_prefix}")
+        print("Ensure bucket is Public and anon SELECT policy exists.")
+    else:
+        print(f"Local outdir: {args.outdir.resolve()}")
 
 if __name__ == "__main__":
     main()

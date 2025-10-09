@@ -2,6 +2,8 @@
 from __future__ import annotations
 import argparse, json, logging, subprocess, sys, time
 from pathlib import Path
+from dotenv import load_dotenv, find_dotenv
+load_dotenv(find_dotenv())
 
 try:
     import paths
@@ -69,20 +71,22 @@ def img_cmd(a: argparse.Namespace) -> list[str]:
             "--outdir", str(paths.OUTPUTS / "images"),
             "--style-preset", a.style_preset]
 
-def veo_img2vid_cmd(a: argparse.Namespace) -> list[str]:
-    cmd = [sys.executable, str(CODE / "gen_img2vid_veo.py"),
+def img2vid_cmd(a: argparse.Namespace) -> list[str]:
+    cmd = [sys.executable, str(CODE / "gen_img2vid.py"),
            "--plan", str(PLAN),
            "--imgdir", str(paths.OUTPUTS / "images"),
            "--outdir", str(paths.OUTPUTS / "video_veo"),
-           "--model", a.veo_model,
-           "--aspect", a.veo_aspect,
-           "--style-preset", a.style_preset]
-    if a.veo_negative: cmd += ["--negative", a.veo_negative]
-    if a.veo_person_generation: cmd += ["--person-generation", a.veo_person_generation]
-    if a.veo_api_key: cmd += ["--api-key", a.veo_api_key]
-    if a.clips and a.clips > 0: cmd += ["--clips", str(a.clips)]
-    if a.veo_max_per_day and a.veo_max_per_day > 0:
-        cmd += ["--max-per-day", str(a.veo_max_per_day)]
+           "--resolution", a.resolution,
+           "--duration", str(a.duration),
+           "--model", a.model]
+    if a.clips and a.clips > 0:
+        cmd += ["--clips", str(a.clips)]
+    if a.higgs_create_endpoint:
+        cmd += ["--generate-endpoint", a.higgs_create_endpoint]
+    if a.higgs_status_endpoint:
+        cmd += ["--status-base", a.higgs_status_endpoint]
+    if a.debug_api:
+        cmd += ["--debug"]
     return cmd
 
 def compose_cmd(a: argparse.Namespace, source: str) -> list[str]:
@@ -93,14 +97,15 @@ def compose_cmd(a: argparse.Namespace, source: str) -> list[str]:
            "--veodir", str(paths.OUTPUTS / "video_veo"),
            "--audiodir", str(paths.OUTPUTS / "audio"),
            "--outdir", str(paths.OUTPUTS / "video")]
+    if source == "slides":
+        cmd += ["--duration", str(a.duration)]
     if a.clips and a.clips > 0:
         cmd += ["--clips", str(a.clips)]
     return cmd
 
-
 def build_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(description="Video generation orchestrator")
-    p.add_argument("--only", choices=["gloo", "translate", "tts", "img", "img2vid", "video"])
+    p.add_argument("--only", choices=["gloo","translate","tts","img","img2vid","video"])
     p.add_argument("--skip-gloo", action="store_true")
     p.add_argument("--skip-translate", action="store_true")
     p.add_argument("--skip-tts", action="store_true")
@@ -112,25 +117,31 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--tts", choices=["piper", "elevenlabs"], default="piper")
     p.add_argument("--img", choices=["sd", "gemini"], default="sd")
 
-    # source controls the compositor behavior and whether img2vid runs
-    p.add_argument("--source", choices=["images", "veo"], default="images")
+    # source controls behavior
+    p.add_argument("--source", choices=["video", "slides"], default="slides")
 
     # Language for TTS
     p.add_argument("--language", choices=["english", "spanish", "japanese"], default="english")
 
-    # Style preset for visual generators and Veo
+    # Style preset
     p.add_argument("--style-preset", choices=["storybook", "oil", "photo"], default="storybook")
 
-    # Clip count for Gloo and Veo limiter
+    # Clip count
     p.add_argument("--clips", type=int, default=0, help="Exact number of clips (1–10). 0 uses template default.")
 
-    # Veo settings
-    p.add_argument("--veo-model", default="veo-3.0-fast-generate-001")
-    p.add_argument("--veo-aspect", choices=["16:9", "9:16"], default="16:9")
-    p.add_argument("--veo-negative", default="")
-    p.add_argument("--veo-person-generation", choices=["", "allow_all", "allow_adult", "dont_allow"], default="")
-    p.add_argument("--veo-api-key", default="")
-    p.add_argument("--veo-max-per-day", type=int, default=0)
+    # Unified generation controls
+    p.add_argument("--resolution", choices=["480p", "720p", "1080p", "4K"], default="720p")
+    p.add_argument("--duration", type=int, default=10, help="Slides only: per-clip seconds")
+    p.add_argument("--model",
+                   choices=["sora-2","higgsfield_v1","kling_25","veo_3","veo-31",
+                            "higgsfield_soul","nanobanana-video","pixverse","ltxv-13b","seedance","wan-25"],
+                   default="kling_25")
+
+    # API overrides / debug
+    p.add_argument("--higgs_create_endpoint", default="")
+    p.add_argument("--higgs_status_endpoint", default="")
+    p.add_argument("--send_form", action="store_true")
+    p.add_argument("--debug_api", action="store_true")
 
     p.add_argument("--log", default="INFO", choices=["DEBUG", "INFO", "WARNING", "ERROR"])
     return p
@@ -150,7 +161,6 @@ def main() -> None:
 
     logging.info("CODE=%s", paths.CODE_ROOT)
 
-    # 1) GLOO
     if enabled("gloo"):
         run_step("GLOO", gloo_cmd(a))
     else:
@@ -160,27 +170,22 @@ def main() -> None:
         logging.error("plan.json missing or empty"); sys.exit(2)
     logging.info("[PLAN] %s — Title: %s", PLAN, load_title())
 
-    # 2) Translate
     if a.language != "english":
         if enabled("translate"): run_step("TRANSLATE", translate_cmd(a))
         else: logging.info("[TRANSLATE] skipped")
         if not exists_plan():
             logging.error("plan.json missing or empty after translate"); sys.exit(2)
 
-    # 3) TTS
     if enabled("tts"): run_step("TTS", tts_cmd(a))
     else: logging.info("[TTS] skipped")
 
-    # 4) IMG
     if enabled("img"): run_step("IMG", img_cmd(a))
     else: logging.info("[IMG] skipped")
 
-    # 4.5) IMG2VID (Veo) — run only when source=veo
-    if a.source == "veo":
-        if enabled("img2vid"): run_step("IMG2VID", veo_img2vid_cmd(a))
+    if a.source == "video":
+        if enabled("img2vid"): run_step("IMG2VID", img2vid_cmd(a))
         else: logging.info("[IMG2VID] skipped")
 
-    # 5) Compose
     if enabled("video"): run_step("VIDEO", compose_cmd(a, a.source))
     else: logging.info("[VIDEO] skipped")
 

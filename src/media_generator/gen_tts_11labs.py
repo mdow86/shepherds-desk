@@ -25,7 +25,8 @@ except Exception:
 PLAN_DEFAULT   = paths.OUTPUTS / "plan.json"
 OUTDIR_DEFAULT = paths.OUTPUTS / "audio"
 
-MODEL_DEFAULT  = os.getenv("ELEVEN_MODEL", "eleven_multilingual_v2")
+MODEL_DEFAULT = os.getenv("ELEVEN_MODEL", "eleven_v3")
+#MODEL_DEFAULT  = os.getenv("ELEVEN_MODEL", "el#even_multilingual_v2")
 FORMAT_DEFAULT = os.getenv("ELEVEN_FORMAT", "mp3_44100_128")
 
 VOICE_EN_DEFAULT = os.getenv("ELEVEN_VOICE_EN", "cVd39cx0VtXNC13y5Y7z")
