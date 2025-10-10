@@ -10,6 +10,7 @@ __pycache__/
 
 # Environment & secrets
 .env
+api/.env
 
 # Generated outputs
 src/media_generator/outputs/
@@ -27,3 +28,19 @@ tools-local/*
 Thumbs.db
 *.swp
 *.swo
+
+# frontend
+/web/node_modules/
+/web/shepherds-web/node_modules/
+/web/**/node_modules/
+/web/**/dist/
+/web/**/.env.local
+
+# general
+node_modules/
+dist/
+.env
+.env.local
+.DS_Store
+
+api/.env.local
